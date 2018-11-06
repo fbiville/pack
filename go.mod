@@ -18,8 +18,6 @@ require (
 	github.com/sclevine/spec v1.0.0
 	github.com/spf13/cobra v0.0.3
 	github.com/spf13/pflag v1.0.3 // indirect
-	golang.org/x/net v0.0.0-20181023162649-9b4f9f5ad519 // indirect
-	golang.org/x/sys v0.0.0-20181025063200-d989b31c8746 // indirect
 )
 
 replace github.com/google/go-containerregistry v0.0.0-20181023232207-eb57122f1bf9 => github.com/dgodd/go-containerregistry v0.0.0-20180912122137-611aad063148a69435dccd3cf8475262c11814f6
