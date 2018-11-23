@@ -1,28 +1,15 @@
 package pack
 
 import (
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
 
-	"github.com/BurntSushi/toml"
-	"github.com/buildpack/lifecycle"
 	"github.com/buildpack/lifecycle/img"
+	"github.com/buildpack/pack/image"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/google/go-containerregistry/pkg/v1"
-	"github.com/pkg/errors"
-
-	"github.com/buildpack/pack/config"
 )
 
 //go:generate mockgen -package mocks -destination mocks/docker.go github.com/buildpack/pack Docker
@@ -51,7 +38,7 @@ type Task interface {
 
 //go:generate mockgen -package mocks -destination mocks/fs.go github.com/buildpack/pack FS
 type FS interface {
-	CreateTGZFile(tarFile, srcDir, tarDir string, uid, gid int) error
+	CreateTarFile(tarFile, srcDir, tarDir string, uid, gid int) error
 	CreateTarReader(srcDir, tarDir string, uid, gid int) (io.Reader, chan error)
 	Untar(r io.Reader, dest string) error
 	CreateSingleFileTar(path, txt string) (io.Reader, error)
