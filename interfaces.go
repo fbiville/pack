@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 
-	"github.com/buildpack/lifecycle/img"
 	"github.com/buildpack/pack/image"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -28,7 +27,6 @@ type Docker interface {
 //go:generate mockgen -package mocks -destination mocks/images.go github.com/buildpack/pack Images
 type Images interface {
 	ReadImage(repoName string, useDaemon bool) (v1.Image, error)
-	RepoStore(repoName string, useDaemon bool) (img.Store, error)
 }
 
 //go:generate mockgen -package mocks -destination mocks/task.go github.com/buildpack/pack Task
