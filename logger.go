@@ -7,26 +7,26 @@ import (
 )
 
 type Logger struct {
-	debug  bool
-	prefix string
-	out    *log.Logger
-	err    *log.Logger
+	verbose bool
+	prefix  string
+	out     *log.Logger
+	err     *log.Logger
 }
 
-func NewLogger(stdout, stderr io.Writer, debug, timestamps bool) *Logger {
-	flags := 0
-	prefix := ""
+func NewLogger(stdout, stderr io.Writer, verbose, noTimestamps bool) *Logger {
+	flags := log.LstdFlags
+	prefix := style.Separator("| ")
 
-	if timestamps {
-		flags = log.LstdFlags
-		prefix = style.Separator("| ")
+	if noTimestamps {
+		flags = 0
+		prefix = ""
 	}
 
 	return &Logger{
-		debug:  debug,
-		prefix: prefix,
-		out:    log.New(stdout, "", flags),
-		err:    log.New(stderr, "", flags),
+		verbose: verbose,
+		prefix:  prefix,
+		out:     log.New(stdout, "", flags),
+		err:     log.New(stderr, "", flags),
 	}
 }
 
@@ -47,7 +47,7 @@ func (l *Logger) Error(format string, a ...interface{}) {
 }
 
 func (l *Logger) Debug(format string, a ...interface{}) {
-	if l.debug {
+	if l.verbose {
 		l.printf(l.out, true, format, a...)
 	}
 }

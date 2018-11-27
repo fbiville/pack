@@ -2,10 +2,10 @@ package image
 
 import (
 	"fmt"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
 	"github.com/buildpack/lifecycle/img"
 	"github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/pkg/errors"
 )
@@ -39,10 +39,6 @@ func (r *remote) Label(key string) (string, error) {
 	labels := cfg.Config.Labels
 	return labels[key], nil
 
-}
-
-func (r *remote) Rename(name string) {
-	r.RepoName = name
 }
 
 func (r *remote) Name() string {
@@ -92,19 +88,6 @@ func (r *remote) TopLayer() (string, error) {
 		return "", err
 	}
 	return hex.String(), nil
-}
-
-func (r *remote) AddLayer(path string) error {
-	newImage, _, err := img.Append(r.Image, path)
-	if err != nil {
-		return errors.Wrap(err, "add layer")
-	}
-	r.Image = newImage
-	return nil
-}
-
-func (r *remote) ReuseLayer(sha string) error {
-	panic("Not Implemented")
 }
 
 func (r *remote) Save() (string, error) {

@@ -2,16 +2,15 @@ package pack_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,23 +28,16 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"github.com/sclevine/spec"
 	"github.com/sclevine/spec/report"
 )
 
-var registryPort string
-
 func TestBuild(t *testing.T) {
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	registryPort = h.RunRegistry(t, true)
+	h.AssertNil(t, exec.Command("docker", "pull", "packs/samples").Run())
+	h.AssertNil(t, exec.Command("docker", "pull", "packs/run").Run())
 	defer h.StopRegistry(t)
-	packHome, err := ioutil.TempDir("", "build-test-pack-home")
-	h.AssertNil(t, err)
-	defer os.RemoveAll(packHome)
-	h.ConfigurePackHome(t, packHome, registryPort)
-	defer h.CleanDefaultImages(t, registryPort)
 
 	spec.Run(t, "build", testBuild, spec.Parallel(), spec.Report(report.Terminal{}))
 }
@@ -53,14 +45,13 @@ func TestBuild(t *testing.T) {
 func testBuild(t *testing.T, when spec.G, it spec.S) {
 	var subject *pack.BuildConfig
 	var buf bytes.Buffer
-	var dockerCli *docker.Client
 
 	it.Before(func() {
 		var err error
 		subject = &pack.BuildConfig{
 			AppDir:          "acceptance/testdata/node_app",
-			Builder:         h.DefaultBuilderImage(t, registryPort),
-			RunImage:        h.DefaultRunImage(t, registryPort),
+			Builder:         "packs/samples",
+			RunImage:        "packs/run",
 			RepoName:        "pack.build." + h.RandString(10),
 			Publish:         false,
 			WorkspaceVolume: fmt.Sprintf("pack-workspace-%x", uuid.New().String()),
@@ -72,14 +63,8 @@ func testBuild(t *testing.T, when spec.G, it spec.S) {
 			Images:          &image.Client{},
 		}
 		log.SetOutput(ioutil.Discard)
-		dockerCli, err = docker.New()
-		subject.Cli = dockerCli
+		subject.Cli, err = docker.New()
 		h.AssertNil(t, err)
-	})
-	it.After(func() {
-		for _, volName := range []string{subject.WorkspaceVolume, subject.CacheVolume} {
-			dockerCli.VolumeRemove(context.TODO(), volName, true)
-		}
 	})
 
 	when("#BuildConfigFromFlags", func() {
@@ -98,7 +83,6 @@ func testBuild(t *testing.T, when spec.G, it spec.S) {
 			factory = &pack.BuildFactory{
 				Images: mockImages,
 				Config: &config.Config{
-					DefaultBuilder: "some/builder",
 					Stacks: []config.Stack{
 						{
 							ID:        "some.stack.id",
@@ -115,7 +99,7 @@ func testBuild(t *testing.T, when spec.G, it spec.S) {
 			mockController.Finish()
 		})
 
-		it("defaults to daemon, default-builder, pulls builder and run images, selects run-image using builder's stack", func() {
+		it("defaults to daemon, pulls builder and run images, selects run-image using builder's stack", func() {
 			mockDocker.EXPECT().PullImage("some/builder")
 			mockDocker.EXPECT().ImageInspectWithRaw(gomock.Any(), "some/builder").Return(dockertypes.ImageInspect{
 				Config: &dockercontainer.Config{
@@ -131,29 +115,7 @@ func testBuild(t *testing.T, when spec.G, it spec.S) {
 
 			config, err := factory.BuildConfigFromFlags(&pack.BuildFlags{
 				RepoName: "some/app",
-				Builder:  "",
-			})
-			h.AssertNil(t, err)
-			h.AssertEq(t, config.RunImage, "some/run")
-		})
-
-		it("respects builder from flags", func() {
-			mockDocker.EXPECT().PullImage("custom/builder")
-			mockDocker.EXPECT().ImageInspectWithRaw(gomock.Any(), "custom/builder").Return(dockertypes.ImageInspect{
-				Config: &dockercontainer.Config{
-					Labels: map[string]string{"io.buildpacks.stack.id": "some.stack.id"},
-				},
-			}, nil, nil)
-			mockDocker.EXPECT().PullImage("some/run")
-			mockDocker.EXPECT().ImageInspectWithRaw(gomock.Any(), "some/run").Return(dockertypes.ImageInspect{
-				Config: &dockercontainer.Config{
-					Labels: map[string]string{"io.buildpacks.stack.id": "some.stack.id"},
-				},
-			}, nil, nil)
-
-			config, err := factory.BuildConfigFromFlags(&pack.BuildFlags{
-				RepoName: "some/app",
-				Builder:  "custom/builder",
+				Builder:  "some/builder",
 			})
 			h.AssertNil(t, err)
 			h.AssertEq(t, config.RunImage, "some/run")
@@ -303,46 +265,6 @@ func testBuild(t *testing.T, when spec.G, it spec.S) {
 			})
 			h.AssertError(t, err, `invalid builder image "some/builder": missing required label "io.buildpacks.stack.id"`)
 		})
-
-		it("sets EnvFile", func() {
-			mockDocker.EXPECT().PullImage("some/builder")
-			mockDocker.EXPECT().ImageInspectWithRaw(gomock.Any(), "some/builder").Return(dockertypes.ImageInspect{
-				Config: &dockercontainer.Config{
-					Labels: map[string]string{"io.buildpacks.stack.id": "some.stack.id"},
-				},
-			}, nil, nil)
-			mockDocker.EXPECT().PullImage("some/run")
-			mockDocker.EXPECT().ImageInspectWithRaw(gomock.Any(), "some/run").Return(dockertypes.ImageInspect{
-				Config: &dockercontainer.Config{
-					Labels: map[string]string{"io.buildpacks.stack.id": "some.stack.id"},
-				},
-			}, nil, nil)
-
-			envFile, err := ioutil.TempFile("", "pack.build.enfile")
-			h.AssertNil(t, err)
-			defer os.Remove(envFile.Name())
-
-			_, err = envFile.Write([]byte(`
-VAR1=value1
-VAR2=value2 with spaces	
-PATH
-				`))
-			h.AssertNil(t, err)
-			envFile.Close()
-
-			config, err := factory.BuildConfigFromFlags(&pack.BuildFlags{
-				RepoName: "some/app",
-				Builder:  "some/builder",
-				EnvFile:  envFile.Name(),
-			})
-			h.AssertNil(t, err)
-			h.AssertEq(t, config.EnvFile, map[string]string{
-				"VAR1": "value1",
-				"VAR2": "value2 with spaces",
-				"PATH": os.Getenv("PATH"),
-			})
-			h.AssertNotEq(t, os.Getenv("PATH"), "")
-		})
 	})
 
 	when("#Detect", func() {
@@ -351,8 +273,9 @@ PATH
 			h.AssertNil(t, err)
 
 			for _, name := range []string{"/workspace/app", "/workspace/app/app.js", "/workspace/app/mydir", "/workspace/app/mydir/myfile.txt"} {
-				txt := runInImage(t, dockerCli, []string{subject.WorkspaceVolume + ":/workspace"}, subject.Builder, "ls", "-ld", name)
-				h.AssertContains(t, txt, "pack pack")
+				txt, err := exec.Command("docker", "run", "-v", subject.WorkspaceVolume+":/workspace", subject.Builder, "ls", "-ld", name).Output()
+				h.AssertNil(t, err)
+				h.AssertContains(t, string(txt), "pack pack")
 			}
 		})
 
@@ -368,7 +291,7 @@ PATH
 			var badappDir string
 			it.Before(func() {
 				var err error
-				badappDir, err = ioutil.TempDir("", "pack.build.badapp.")
+				badappDir, err = ioutil.TempDir("/tmp", "pack.build.badapp.")
 				h.AssertNil(t, err)
 				h.AssertNil(t, ioutil.WriteFile(filepath.Join(badappDir, "file.txt"), []byte("content"), 0644))
 				subject.AppDir = badappDir
@@ -386,11 +309,8 @@ PATH
 			when("directory buildpack", func() {
 				var bpDir string
 				it.Before(func() {
-					if runtime.GOOS == "windows" {
-						t.Skip("directory buildpacks are not implemented on windows")
-					}
 					var err error
-					bpDir, err = ioutil.TempDir("", "pack.build.bpdir.")
+					bpDir, err = ioutil.TempDir("/tmp", "pack.build.bpdir.")
 					h.AssertNil(t, err)
 					h.AssertNil(t, ioutil.WriteFile(filepath.Join(bpDir, "buildpack.toml"), []byte(`
 					[buildpack]
@@ -436,7 +356,7 @@ PATH
 
 	when("#Analyze", func() {
 		it.Before(func() {
-			tmpDir, err := ioutil.TempDir("", "pack.build.analyze.")
+			tmpDir, err := ioutil.TempDir("/tmp", "pack.build.analyze.")
 			h.AssertNil(t, err)
 			defer os.RemoveAll(tmpDir)
 			h.AssertNil(t, ioutil.WriteFile(filepath.Join(tmpDir, "group.toml"), []byte(`[[buildpacks]]
@@ -448,7 +368,9 @@ PATH
 		})
 		when("no previous image exists", func() {
 			when("publish", func() {
+				var registryPort string
 				it.Before(func() {
+					registryPort = h.RunRegistry(t)
 					subject.RepoName = "localhost:" + registryPort + "/" + subject.RepoName
 					subject.Publish = true
 				})
@@ -470,21 +392,27 @@ PATH
 		})
 
 		when("previous image exists", func() {
-			var dockerFile string
 			it.Before(func() {
-				dockerFile = fmt.Sprintf(`
-					FROM scratch
-					LABEL io.buildpacks.lifecycle.metadata='{"buildpacks":[{"key":"io.buildpacks.samples.nodejs","layers":{"node_modules":{"sha":"sha256:99311ec03d790adf46d35cd9219ed80a7d9a4b97f761247c02c77e7158a041d5","data":{"lock_checksum":"eb04ed1b461f1812f0f4233ef997cdb5"}}}}]}'
-					LABEL repo_name_for_randomisation=%s
-				`, subject.RepoName)
+				cmd := exec.Command("docker", "build", "-t", subject.RepoName, "-")
+				cmd.Stdin = strings.NewReader("FROM scratch\n" + `LABEL io.buildpacks.lifecycle.metadata='{"buildpacks":[{"key":"io.buildpacks.samples.nodejs","layers":{"node_modules":{"sha":"sha256:99311ec03d790adf46d35cd9219ed80a7d9a4b97f761247c02c77e7158a041d5","data":{"lock_checksum":"eb04ed1b461f1812f0f4233ef997cdb5"}}}}]}'` + "\n")
+				h.AssertNil(t, cmd.Run())
+			})
+			it.After(func() {
+				h.RemoveImage(subject.RepoName)
 			})
 
 			when("publish", func() {
+				var registryPort string
 				it.Before(func() {
-					subject.RepoName = "localhost:" + registryPort + "/" + subject.RepoName
+					oldRepoName := subject.RepoName
+					registryPort = h.RunRegistry(t)
+
+					subject.RepoName = "localhost:" + registryPort + "/" + oldRepoName
 					subject.Publish = true
 
-					h.CreateImageOnRemote(t, dockerCli, subject.RepoName, dockerFile)
+					h.Run(t, exec.Command("docker", "tag", oldRepoName, subject.RepoName))
+					h.Run(t, exec.Command("docker", "push", subject.RepoName))
+					h.RemoveImage(oldRepoName, subject.RepoName)
 				})
 
 				it("tells the user nothing", func() {
@@ -504,15 +432,7 @@ PATH
 			})
 
 			when("daemon", func() {
-				it.Before(func() {
-					subject.Publish = false
-
-					h.CreateImageOnLocal(t, dockerCli, subject.RepoName, dockerFile)
-				})
-
-				it.After(func() {
-					h.AssertNil(t, h.DockerRmi(dockerCli, subject.RepoName))
-				})
+				it.Before(func() { subject.Publish = false })
 
 				it("tells the user nothing", func() {
 					h.AssertNil(t, subject.Analyze())
@@ -537,7 +457,7 @@ PATH
 				var bpDir string
 				it.Before(func() {
 					var err error
-					bpDir, err = ioutil.TempDir("", "pack.build.bpdir.")
+					bpDir, err = ioutil.TempDir("/tmp", "pack.build.bpdir.")
 					h.AssertNil(t, err)
 					h.AssertNil(t, ioutil.WriteFile(filepath.Join(bpDir, "buildpack.toml"), []byte(`
 					[buildpack]
@@ -560,9 +480,6 @@ PATH
 				it.After(func() { os.RemoveAll(bpDir) })
 
 				it("runs the buildpacks bin/build", func() {
-					if runtime.GOOS == "windows" {
-						t.Skip("directory buildpacks are not implemented on windows")
-					}
 					subject.Buildpacks = []string{bpDir}
 					_, err := subject.Detect()
 					h.AssertNil(t, err)
@@ -586,27 +503,6 @@ PATH
 				})
 			})
 		})
-
-		when("EnvFile is specified", func() {
-			it("sets specified env variables in /platform/env/...", func() {
-				if runtime.GOOS == "windows" {
-					t.Skip("directory buildpacks are not implemented on windows")
-				}
-				subject.EnvFile = map[string]string{
-					"VAR1": "value1",
-					"VAR2": "value2 with spaces",
-				}
-				subject.Buildpacks = []string{"acceptance/testdata/mock_buildpacks/printenv"}
-				_, err := subject.Detect()
-				h.AssertNil(t, err)
-
-				err = subject.Build()
-				h.AssertNil(t, err)
-
-				h.AssertContains(t, buf.String(), "ENV: VAR1 is value1;")
-				h.AssertContains(t, buf.String(), "ENV: VAR2 is value2 with spaces;")
-			})
-		})
 	})
 
 	when("#Export", func() {
@@ -616,7 +512,7 @@ PATH
 			runTopLayer string
 		)
 		it.Before(func() {
-			tmpDir, err := ioutil.TempDir("", "pack.build.export.")
+			tmpDir, err := ioutil.TempDir("/tmp", "pack.build.export.")
 			h.AssertNil(t, err)
 			defer os.RemoveAll(tmpDir)
 			files := map[string]string{
@@ -639,204 +535,158 @@ PATH
 					{ID: "io.buildpacks.samples.nodejs", Version: "0.0.1"},
 				},
 			}
-			runSHA = imageSHA(t, dockerCli, subject.RunImage)
-			runTopLayer = topLayer(t, dockerCli, subject.RunImage)
+			h.AssertNil(t, exec.Command("docker", "pull", "packs/run").Run())
+			runSHA = imageSHA(t, subject.RunImage)
+			runTopLayer = topLayer(t, subject.RunImage)
 		})
+		it.After(func() { h.RemoveImage(subject.RepoName) })
 
-		when("publish", func() {
-			var oldRepoName string
-			it.Before(func() {
-				oldRepoName = subject.RepoName
-
-				subject.RepoName = "localhost:" + registryPort + "/" + oldRepoName
-				subject.Publish = true
-			})
-
-			it("creates the image on the registry", func() {
-				h.AssertNil(t, subject.Export(group))
-				images := h.HttpGet(t, "http://localhost:"+registryPort+"/v2/_catalog")
-				h.AssertContains(t, images, oldRepoName)
-			})
-
-			it("puts the files on the image", func() {
-				h.AssertNil(t, subject.Export(group))
-
-				h.AssertNil(t, dockerCli.PullImage(subject.RepoName))
-				txt, err := h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/app/file.txt")
-				h.AssertNil(t, err)
-				h.AssertEq(t, string(txt), "some text")
-
-				txt, err = h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/io.buildpacks.samples.nodejs/mylayer/file.txt")
-				h.AssertNil(t, err)
-				h.AssertEq(t, string(txt), "content")
-			})
-
-			it("sets the metadata on the image", func() {
-				h.AssertNil(t, subject.Export(group))
-
-				h.AssertNil(t, dockerCli.PullImage(subject.RepoName))
-				var metadata lifecycle.AppImageMetadata
-				metadataJSON := imageLabel(t, dockerCli, subject.RepoName, "io.buildpacks.lifecycle.metadata")
-				h.AssertNil(t, json.Unmarshal([]byte(metadataJSON), &metadata))
-
-				h.AssertEq(t, metadata.RunImage.SHA, runSHA)
-				h.AssertEq(t, metadata.RunImage.TopLayer, runTopLayer)
-				h.AssertContains(t, metadata.App.SHA, "sha256:")
-				h.AssertContains(t, metadata.Config.SHA, "sha256:")
-				h.AssertEq(t, len(metadata.Buildpacks), 1)
-				h.AssertContains(t, metadata.Buildpacks[0].Layers["mylayer"].SHA, "sha256:")
-				h.AssertEq(t, metadata.Buildpacks[0].Layers["mylayer"].Data, map[string]interface{}{"key": "myval"})
-				h.AssertContains(t, metadata.Buildpacks[0].Layers["other"].SHA, "sha256:")
-			})
-		})
-
-		when("daemon", func() {
-			it.Before(func() { subject.Publish = false })
-
-			it.After(func() {
-				h.AssertNil(t, h.DockerRmi(dockerCli, subject.RepoName))
-			})
-
-			it("creates the image on the daemon", func() {
-				h.AssertNil(t, subject.Export(group))
-				images := imageList(t, dockerCli)
-				h.AssertSliceContains(t, images, subject.RepoName+":latest")
-			})
-			it("puts the files on the image", func() {
-				h.AssertNil(t, subject.Export(group))
-
-				txt, err := h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/app/file.txt")
-				h.AssertNil(t, err)
-				h.AssertEq(t, string(txt), "some text")
-
-				txt, err = h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/io.buildpacks.samples.nodejs/mylayer/file.txt")
-				h.AssertNil(t, err)
-				h.AssertEq(t, string(txt), "content")
-			})
-			it("sets the metadata on the image", func() {
-				h.AssertNil(t, subject.Export(group))
-
-				var metadata lifecycle.AppImageMetadata
-				metadataJSON := imageLabel(t, dockerCli, subject.RepoName, "io.buildpacks.lifecycle.metadata")
-				h.AssertNil(t, json.Unmarshal([]byte(metadataJSON), &metadata))
-
-				h.AssertEq(t, metadata.RunImage.SHA, runSHA)
-				h.AssertEq(t, metadata.RunImage.TopLayer, runTopLayer)
-				h.AssertContains(t, metadata.App.SHA, "sha256:")
-				h.AssertContains(t, metadata.Config.SHA, "sha256:")
-				h.AssertEq(t, len(metadata.Buildpacks), 1)
-				h.AssertContains(t, metadata.Buildpacks[0].Layers["mylayer"].SHA, "sha256:")
-				h.AssertEq(t, metadata.Buildpacks[0].Layers["mylayer"].Data, map[string]interface{}{"key": "myval"})
-				h.AssertContains(t, metadata.Buildpacks[0].Layers["other"].SHA, "sha256:")
-			})
-
-			when("PACK_USER_ID and PACK_GROUP_ID are set on builder", func() {
+		when("no previous image exists", func() {
+			when("publish", func() {
+				var oldRepoName, registryPort string
 				it.Before(func() {
-					subject.Builder = "packs/samples-" + h.RandString(8)
-					h.CreateImageOnLocal(t, dockerCli, subject.Builder, fmt.Sprintf(`
-						FROM %s
-						ENV PACK_USER_ID 1234
-						ENV PACK_GROUP_ID 5678
-						LABEL repo_name_for_randomisation=%s
-					`, h.DefaultBuilderImage(t, registryPort), subject.Builder))
+					oldRepoName = subject.RepoName
+					registryPort = h.RunRegistry(t)
+
+					subject.RepoName = "localhost:" + registryPort + "/" + oldRepoName
+					subject.Publish = true
+				})
+				it("creates the image on the registry", func() {
+					h.AssertNil(t, subject.Export(group))
+					images := h.HttpGet(t, "http://localhost:"+registryPort+"/v2/_catalog")
+					h.AssertContains(t, images, oldRepoName)
+				})
+				it("puts the files on the image", func() {
+					h.AssertNil(t, subject.Export(group))
+
+					h.Run(t, exec.Command("docker", "pull", subject.RepoName))
+					txt := h.Run(t, exec.Command("docker", "run", subject.RepoName, "cat", "/workspace/app/file.txt"))
+					h.AssertEq(t, string(txt), "some text")
+
+					txt = h.Run(t, exec.Command("docker", "run", subject.RepoName, "cat", "/workspace/io.buildpacks.samples.nodejs/mylayer/file.txt"))
+					h.AssertEq(t, string(txt), "content")
+				})
+				it("sets the metadata on the image", func() {
+					h.AssertNil(t, subject.Export(group))
+
+					h.Run(t, exec.Command("docker", "pull", subject.RepoName))
+					var metadata lifecycle.AppImageMetadata
+					metadataJSON := h.Run(t, exec.Command("docker", "inspect", subject.RepoName, "--format", `{{index .Config.Labels "io.buildpacks.lifecycle.metadata"}}`))
+					h.AssertNil(t, json.Unmarshal([]byte(metadataJSON), &metadata))
+
+					h.AssertEq(t, metadata.RunImage.SHA, runSHA)
+					h.AssertEq(t, metadata.RunImage.TopLayer, runTopLayer)
+					h.AssertContains(t, metadata.App.SHA, "sha256:")
+					h.AssertContains(t, metadata.Config.SHA, "sha256:")
+					h.AssertEq(t, len(metadata.Buildpacks), 1)
+					h.AssertContains(t, metadata.Buildpacks[0].Layers["mylayer"].SHA, "sha256:")
+					h.AssertEq(t, metadata.Buildpacks[0].Layers["mylayer"].Data, map[string]interface{}{"key": "myval"})
+					h.AssertContains(t, metadata.Buildpacks[0].Layers["other"].SHA, "sha256:")
+				})
+			})
+
+			when("daemon", func() {
+				it.Before(func() { subject.Publish = false })
+				it.After(func() {
+					if subject.Builder != "" {
+						h.RemoveImage(subject.Builder)
+					}
 				})
 
-				it.After(func() {
-					h.AssertNil(t, h.DockerRmi(dockerCli, subject.Builder))
+				it("creates the image on the daemon", func() {
+					h.AssertNil(t, subject.Export(group))
+					images := h.Run(t, exec.Command("docker", "images", "--format", "{{.Repository}}:{{.Tag}}"))
+					h.AssertContains(t, string(images), subject.RepoName)
+				})
+				it("puts the files on the image", func() {
+					h.AssertNil(t, subject.Export(group))
+
+					txt := h.Run(t, exec.Command("docker", "run", subject.RepoName, "cat", "/workspace/app/file.txt"))
+					h.AssertEq(t, string(txt), "some text")
+
+					txt = h.Run(t, exec.Command("docker", "run", subject.RepoName, "cat", "/workspace/io.buildpacks.samples.nodejs/mylayer/file.txt"))
+					h.AssertEq(t, string(txt), "content")
+				})
+				it("sets the metadata on the image", func() {
+					h.AssertNil(t, subject.Export(group))
+
+					var metadata lifecycle.AppImageMetadata
+					metadataJSON := h.Run(t, exec.Command("docker", "inspect", subject.RepoName, "--format", `{{index .Config.Labels "io.buildpacks.lifecycle.metadata"}}`))
+					h.AssertNil(t, json.Unmarshal([]byte(metadataJSON), &metadata))
+
+					h.AssertEq(t, metadata.RunImage.SHA, runSHA)
+					h.AssertEq(t, metadata.RunImage.TopLayer, runTopLayer)
+					h.AssertContains(t, metadata.App.SHA, "sha256:")
+					h.AssertContains(t, metadata.Config.SHA, "sha256:")
+					h.AssertEq(t, len(metadata.Buildpacks), 1)
+					h.AssertContains(t, metadata.Buildpacks[0].Layers["mylayer"].SHA, "sha256:")
+					h.AssertEq(t, metadata.Buildpacks[0].Layers["mylayer"].Data, map[string]interface{}{"key": "myval"})
+					h.AssertContains(t, metadata.Buildpacks[0].Layers["other"].SHA, "sha256:")
 				})
 
 				it("sets owner of layer files to PACK_USER_ID:PACK_GROUP_ID", func() {
+					subject.Builder = "packs/samples-" + h.RandString(8)
+					cmd := exec.Command("docker", "build", "-t", subject.Builder, "-")
+					cmd.Stdin = strings.NewReader(`
+						FROM packs/samples
+						ENV PACK_USER_ID 1234
+						ENV PACK_GROUP_ID 5678
+					`)
+					h.Run(t, cmd)
+
 					h.AssertNil(t, subject.Export(group))
-					txt := runInImage(t, dockerCli, nil, subject.RepoName, "ls", "-la", "/workspace/app/file.txt")
-					h.AssertContains(t, txt, " 1234 5678 ")
+					txt := h.Run(t, exec.Command("docker", "run", subject.RepoName, "ls", "-la", "/workspace/app/file.txt"))
+					h.AssertContains(t, string(txt), " 1234 5678 ")
+				})
+
+				it("errors if run image is missing PACK_USER_ID", func() {
+					subject.Builder = "packs/samples-" + h.RandString(8)
+					cmd := exec.Command("docker", "build", "-t", subject.Builder, "-")
+					cmd.Stdin = strings.NewReader(`
+						FROM packs/samples
+						ENV PACK_USER_ID ''
+						ENV PACK_GROUP_ID 5678
+					`)
+					h.Run(t, cmd)
+
+					err := subject.Export(group)
+					h.AssertError(t, err, "export: not found pack uid & gid")
 				})
 			})
+		})
 
-			when("previous image exists", func() {
-				it("reuses images from previous layers", func() {
-					t.Log("create image and h.Assert add new layer")
-					h.AssertNil(t, subject.Export(group))
+		when("previous image exists", func() {
+			it("reuses images from previous layers", func() {
+				addLayer := "ADD --chown=1000:1000 /workspace/io.buildpacks.samples.nodejs/mylayer /workspace/io.buildpacks.samples.nodejs/mylayer"
+				copyLayer := "COPY --from=prev --chown=1000:1000 /workspace/io.buildpacks.samples.nodejs/mylayer /workspace/io.buildpacks.samples.nodejs/mylayer"
 
-					origImageID := h.ImageID(t, subject.RepoName)
-					defer func() { h.AssertNil(t, h.DockerRmi(dockerCli, origImageID)) }()
+				t.Log("create image and h.Assert add new layer")
+				h.AssertNil(t, subject.Export(group))
+				h.AssertContains(t, buf.String(), addLayer)
 
-					txt, err := h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/io.buildpacks.samples.nodejs/mylayer/file.txt")
-					h.AssertNil(t, err)
-					h.AssertEq(t, txt, "content")
+				t.Log("setup workspace to reuse layer")
+				buf.Reset()
+				h.Run(t, exec.Command("docker", "run", "--user=root", "-v", subject.WorkspaceVolume+":/workspace", "packs/samples", "rm", "-rf", "/workspace/io.buildpacks.samples.nodejs/mylayer"))
 
-					t.Log("setup workspace to reuse layer")
-					buf.Reset()
-					runInImage(t, dockerCli,
-						[]string{subject.WorkspaceVolume + ":/workspace"},
-						h.DefaultBuilderImage(t, registryPort),
-						"rm", "-rf", "/workspace/io.buildpacks.samples.nodejs/mylayer",
-					)
-
-					t.Log("recreate image and h.Assert copying layer from previous image")
-					h.AssertNil(t, subject.Export(group))
-					txt, err = h.CopySingleFileFromImage(dockerCli, subject.RepoName, "workspace/io.buildpacks.samples.nodejs/mylayer/file.txt")
-					h.AssertNil(t, err)
-					h.AssertEq(t, txt, "content")
-				})
+				t.Log("recreate image and h.Assert copying layer from previous image")
+				h.AssertNil(t, subject.Export(group))
+				h.AssertContains(t, buf.String(), copyLayer)
 			})
 		})
 	})
 }
 
-func imageSHA(t *testing.T, dockerCli *docker.Client, repoName string) string {
-	t.Helper()
-	inspect, _, err := dockerCli.ImageInspectWithRaw(context.Background(), repoName)
-	h.AssertNil(t, err)
-	sha := strings.Split(inspect.RepoDigests[0], "@")[1]
+func imageSHA(t *testing.T, repoName string) string {
+	digests := make([]string, 1, 1)
+	data := h.Run(t, exec.Command("docker", "inspect", repoName, "--format", `{{json .RepoDigests}}`))
+	json.Unmarshal([]byte(data), &digests)
+	sha := strings.Split(digests[0], "@")[1]
 	return sha
 }
 
-func topLayer(t *testing.T, dockerCli *docker.Client, repoName string) string {
-	t.Helper()
-	inspect, _, err := dockerCli.ImageInspectWithRaw(context.Background(), repoName)
-	h.AssertNil(t, err)
-	layers := inspect.RootFS.Layers
-	return layers[len(layers)-1]
-}
-
-func imageLabel(t *testing.T, dockerCli *docker.Client, repoName, labelName string) string {
-	t.Helper()
-	inspect, _, err := dockerCli.ImageInspectWithRaw(context.Background(), repoName)
-	h.AssertNil(t, err)
-	return inspect.Config.Labels[labelName]
-}
-
-func imageList(t *testing.T, dockerCli *docker.Client) []string {
-	t.Helper()
-	var out []string
-	list, err := dockerCli.ImageList(context.Background(), dockertypes.ImageListOptions{})
-	h.AssertNil(t, err)
-	for _, s := range list {
-		out = append(out, s.RepoTags...)
-	}
-	return out
-}
-
-func runInImage(t *testing.T, dockerCli *docker.Client, volumes []string, repoName string, args ...string) string {
-	t.Helper()
-	ctx := context.Background()
-
-	ctr, err := dockerCli.ContainerCreate(ctx, &dockercontainer.Config{
-		Image: repoName,
-		Cmd:   args,
-		User:  "root",
-	}, &dockercontainer.HostConfig{
-		AutoRemove: true,
-		Binds:      volumes,
-	}, nil, "")
-	h.AssertNil(t, err)
-	defer dockerCli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{Force: true})
-
-	var buf bytes.Buffer
-	err = dockerCli.RunContainer(ctx, ctr.ID, &buf, &buf)
-	if err != nil {
-		t.Fatalf("Expected nil: %s", errors.Wrap(err, buf.String()))
-	}
-
-	return buf.String()
+func topLayer(t *testing.T, repoName string) string {
+	layers := make([]string, 1, 1)
+	layerData := h.Run(t, exec.Command("docker", "inspect", repoName, "--format", `{{json .RootFS.Layers}}`))
+	json.Unmarshal([]byte(layerData), &layers)
+	return strings.TrimSpace(layers[len(layers)-1])
 }

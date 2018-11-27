@@ -2,10 +2,8 @@ package pack
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"crypto/md5"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,25 +11,22 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/buildpack/lifecycle"
-	"github.com/buildpack/lifecycle/img"
-	"github.com/buildpack/pack/config"
-	"github.com/buildpack/pack/docker"
-	"github.com/buildpack/pack/fs"
-	"github.com/buildpack/pack/image"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	dockercli "github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+
+	"github.com/buildpack/pack/config"
+	"github.com/buildpack/pack/docker"
+	"github.com/buildpack/pack/fs"
+	"github.com/buildpack/pack/image"
 )
 
 type BuildFactory struct {
@@ -48,7 +43,6 @@ type BuildFlags struct {
 	AppDir     string
 	Builder    string
 	RunImage   string
-	EnvFile    string
 	RepoName   string
 	Publish    bool
 	NoPull     bool
@@ -59,10 +53,8 @@ type BuildConfig struct {
 	AppDir     string
 	Builder    string
 	RunImage   string
-	EnvFile    map[string]string
 	RepoName   string
 	Publish    bool
-	NoPull     bool
 	Buildpacks []string
 	// Above are copied from BuildFlags are set by init
 	Cli    Docker
@@ -78,13 +70,13 @@ type BuildConfig struct {
 }
 
 const (
-	launchDir     = "/workspace"
-	cacheDir      = "/cache"
-	buildpacksDir = "/buildpacks"
-	platformDir   = "/platform"
-	orderPath     = "/buildpacks/order.toml"
-	groupPath     = `/workspace/group.toml`
-	planPath      = "/workspace/plan.toml"
+	launchDir      = "/workspace"
+	cacheDir       = "/cache"
+	buildpacksDir  = "/buildpacks"
+	platformDir    = "/platform"
+	orderPath      = "/buildpacks/order.toml"
+	groupPath      = `/workspace/group.toml`
+	planPath       = "/workspace/plan.toml"
 )
 
 func DefaultBuildFactory() (*BuildFactory, error) {
@@ -102,7 +94,7 @@ func DefaultBuildFactory() (*BuildFactory, error) {
 		return nil, err
 	}
 
-	f.Config, err = config.NewDefault()
+	f.Config, err = config.New(filepath.Join(os.Getenv("HOME"), ".pack"))
 	if err != nil {
 		return nil, err
 	}
@@ -123,16 +115,18 @@ func (bf *BuildFactory) BuildConfigFromFlags(f *BuildFlags) (*BuildConfig, error
 	if err != nil {
 		return nil, err
 	}
-
-	if f.RepoName == "" {
-		f.RepoName = fmt.Sprintf("pack.local/run/%x", md5.Sum([]byte(appDir)))
+	if !f.NoPull {
+		bf.Log.Printf("Pulling builder image '%s' (use --no-pull flag to skip this step)", f.Builder)
+		if err := bf.Cli.PullImage(f.Builder); err != nil {
+			return nil, err
+		}
 	}
 
 	b := &BuildConfig{
 		AppDir:          appDir,
+		Builder:         f.Builder,
 		RepoName:        f.RepoName,
 		Publish:         f.Publish,
-		NoPull:          f.NoPull,
 		Buildpacks:      f.Buildpacks,
 		Cli:             bf.Cli,
 		Stdout:          bf.Stdout,
@@ -145,28 +139,7 @@ func (bf *BuildFactory) BuildConfigFromFlags(f *BuildFlags) (*BuildConfig, error
 		CacheVolume:     fmt.Sprintf("pack-cache-%x", md5.Sum([]byte(appDir))),
 	}
 
-	if f.EnvFile != "" {
-		b.EnvFile, err = parseEnvFile(f.EnvFile)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if f.Builder == "" {
-		bf.Log.Printf("Using default builder image '%s'\n", bf.Config.DefaultBuilder)
-		b.Builder = bf.Config.DefaultBuilder
-	} else {
-		bf.Log.Printf("Using user provided builder image '%s'\n", f.Builder)
-		b.Builder = f.Builder
-	}
-	if !f.NoPull {
-		bf.Log.Printf("Pulling builder image '%s' (use --no-pull flag to skip this step)", b.Builder)
-		if err := bf.Cli.PullImage(b.Builder); err != nil {
-			return nil, err
-		}
-	}
-
-	builderStackID, err := b.imageLabel(b.Builder, "io.buildpacks.stack.id", true)
+	builderStackID, err := b.imageLabel(f.Builder, "io.buildpacks.stack.id", true)
 	if err != nil {
 		return nil, fmt.Errorf(`invalid builder image "%s": %s`, b.Builder, err)
 	}
@@ -179,7 +152,7 @@ func (bf *BuildFactory) BuildConfigFromFlags(f *BuildFlags) (*BuildConfig, error
 	}
 
 	if f.RunImage != "" {
-		bf.Log.Printf("Using user provided run image '%s'\n", f.RunImage)
+		bf.Log.Printf("Using user provided run image '%s'", f.RunImage)
 		b.RunImage = f.RunImage
 	} else {
 		reg, err := config.Registry(f.RepoName)
@@ -269,9 +242,6 @@ func (b *BuildConfig) copyBuildpacksToContainer(ctx context.Context, ctrID strin
 	for _, bp := range b.Buildpacks {
 		var id, version string
 		if _, err := os.Stat(filepath.Join(bp, "buildpack.toml")); !os.IsNotExist(err) {
-			if runtime.GOOS == "windows" {
-				return nil, fmt.Errorf("directory buildpacks are not implemented on windows")
-			}
 			var buildpackTOML struct {
 				Buildpack struct {
 					ID      string `toml:"id"`
@@ -310,6 +280,7 @@ func (b *BuildConfig) Detect() (*lifecycle.BuildpackGroup, error) {
 		Cmd: []string{
 			"/lifecycle/detector",
 			"-buildpacks", buildpacksDir,
+			"-launch", launchDir,
 			"-order", orderPath,
 			"-group", groupPath,
 			"-plan", planPath,
@@ -355,7 +326,7 @@ func (b *BuildConfig) Detect() (*lifecycle.BuildpackGroup, error) {
 		return nil, errors.Wrap(err, "detect")
 	}
 
-	tr, errChan := b.FS.CreateTarReader(b.AppDir, launchDir+"/app", uid, gid)
+	tr, errChan := b.FS.CreateTarReader(b.AppDir, filepath.Join(launchDir, "app"), uid, gid)
 	if err := b.Cli.CopyToContainer(ctx, ctr.ID, "/", tr, dockertypes.CopyToContainerOptions{}); err != nil {
 		return nil, errors.Wrap(err, "copy app to workspace volume")
 	}
@@ -363,7 +334,7 @@ func (b *BuildConfig) Detect() (*lifecycle.BuildpackGroup, error) {
 		return nil, errors.Wrap(err, "copy app to workspace volume")
 	}
 
-	if err := b.chownDir(launchDir+"/app", uid, gid); err != nil {
+	if err := b.chownDir(filepath.Join(launchDir, "app"), uid, gid); err != nil {
 		return nil, errors.Wrap(err, "chown app to workspace volume")
 	}
 
@@ -422,7 +393,7 @@ func (b *BuildConfig) Analyze() error {
 			"/lifecycle/analyzer",
 			"-launch", launchDir,
 			"-group", groupPath,
-			"-metadata", launchDir + "/imagemetadata.json",
+			"-metadata", filepath.Join(launchDir, "imagemetadata.json"),
 			b.RepoName,
 		},
 	}, &container.HostConfig{
@@ -435,7 +406,7 @@ func (b *BuildConfig) Analyze() error {
 	}
 	defer b.Cli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
 
-	tr, err := b.FS.CreateSingleFileTar(launchDir+"/imagemetadata.json", metadata)
+	tr, err := b.FS.CreateSingleFileTar(filepath.Join(launchDir, "imagemetadata.json"), metadata)
 	if err != nil {
 		return errors.Wrap(err, "create tar with image metadata")
 	}
@@ -480,258 +451,38 @@ func (b *BuildConfig) Build() error {
 		}
 	}
 
-	if len(b.EnvFile) > 0 {
-		platformEnvTar, err := b.tarEnvFile()
-		if err != nil {
-			return errors.Wrap(err, "create env files")
-		}
-		if err := b.Cli.CopyToContainer(ctx, ctr.ID, "/", platformEnvTar, dockertypes.CopyToContainerOptions{}); err != nil {
-			return errors.Wrap(err, "create env files")
-		}
-	}
-
 	return b.Cli.RunContainer(ctx, ctr.ID, b.Stdout, b.Stderr)
 }
 
-func parseEnvFile(envFile string) (map[string]string, error) {
-	out := make(map[string]string, 0)
-	f, err := ioutil.ReadFile(envFile)
-	if err != nil {
-		return nil, errors.Wrapf(err, "open %s", envFile)
-	}
-	for _, line := range strings.Split(string(f), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		arr := strings.SplitN(line, "=", 2)
-		if len(arr) > 1 {
-			out[arr[0]] = arr[1]
-		} else {
-			out[arr[0]] = os.Getenv(arr[0])
-		}
-	}
-	return out, nil
-}
-
-func (b *BuildConfig) tarEnvFile() (io.Reader, error) {
-	now := time.Now()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for k, v := range b.EnvFile {
-		if err := tw.WriteHeader(&tar.Header{Name: "/platform/env/" + k, Size: int64(len(v)), Mode: 0444, ModTime: now}); err != nil {
-			return nil, err
-		}
-		if _, err := tw.Write([]byte(v)); err != nil {
-			return nil, err
-		}
-	}
-	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: "/platform/env/", Mode: 0555, ModTime: now}); err != nil {
-		return nil, err
-	}
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	return bytes.NewReader(buf.Bytes()), nil
-}
-
 func (b *BuildConfig) Export(group *lifecycle.BuildpackGroup) error {
-	ctx := context.Background()
-	ctr, err := b.Cli.ContainerCreate(ctx, &container.Config{
-		Image: b.Builder,
-		Cmd: []string{
-			"/lifecycle/exporter",
-			"-dry-run", "/tmp/pack-exporter",
-			"-image", b.RunImage,
-			"-launch", launchDir,
-			"-group", groupPath,
-			b.RepoName,
-		},
-	}, &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:%s:", b.WorkspaceVolume, launchDir),
-		},
-	}, nil, "")
+	uid, gid, err := b.packUidGid(b.Builder)
 	if err != nil {
-		return errors.Wrap(err, "export container create")
-	}
-	defer b.Cli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
-
-	if err := b.Cli.RunContainer(ctx, ctr.ID, b.Stdout, b.Stderr); err != nil {
-		return errors.Wrap(err, "run lifecycle/exporter")
-	}
-	defer b.Cli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
-
-	r, _, err := b.Cli.CopyFromContainer(ctx, ctr.ID, "/tmp/pack-exporter")
-	if err != nil {
-		return errors.Wrap(err, "copy from exporter container")
-	}
-	defer r.Close()
-
-	tmpDir, err := ioutil.TempDir("", "pack.build.")
-	if err != nil {
-		return errors.Wrap(err, "tmpdir for exporter")
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := b.FS.Untar(r, tmpDir); err != nil {
-		return errors.Wrap(err, "untar from exporter container")
+		return errors.Wrap(err, "export")
 	}
 
-	var imgSHA string
 	if b.Publish {
-		runImageStore, err := img.NewRegistry(b.RunImage)
+		localWorkspaceDir, cleanup, err := b.exportVolume(b.Builder, b.WorkspaceVolume)
 		if err != nil {
-			return errors.Wrap(err, "access")
+			return err
 		}
-		runImage, err := runImageStore.Image()
-		if err != nil {
-			return errors.Wrap(err, "access")
-		}
+		defer cleanup()
 
-		exporter := &lifecycle.Exporter{
-			ArtifactsDir: filepath.Join(tmpDir, "pack-exporter"),
-			Buildpacks:   group.Buildpacks,
-			Out:          os.Stdout,
-			Err:          os.Stderr,
-		}
-		repoStore, err := img.NewRegistry(b.RepoName)
+		imgSHA, err := exportRegistry(group, uid, gid, localWorkspaceDir, b.RepoName, b.RunImage, b.Stdout, b.Stderr)
 		if err != nil {
-			return errors.Wrap(err, "access")
+			return err
 		}
-		origImage, err := repoStore.Image()
-		if err != nil {
-			return errors.Wrap(err, "access")
-		}
-
-		_, err = origImage.ConfigFile()
-		if err != nil {
-			origImage = nil
-		}
-		newImage, err := exporter.ExportImage(
-			launchDir,
-			launchDir+"/app",
-			runImage,
-			origImage,
-		)
-		if err != nil {
-			return errors.Wrap(err, "export to registry")
-		}
-		if err := repoStore.Write(newImage); err != nil {
-			return errors.Wrap(err, "write")
-		}
-		hash, err := newImage.Digest()
-		if err != nil {
-			return errors.Wrap(err, "digest")
-		}
-		imgSHA = hash.String()
+		b.Log.Printf("\n*** Image: %s@%s\n", b.RepoName, imgSHA)
 	} else {
-		var metadata lifecycle.AppImageMetadata
-		bData, err := ioutil.ReadFile(filepath.Join(tmpDir, "pack-exporter", "metadata.json"))
-
-		if err != nil {
-			return errors.Wrap(err, "read exporter metadata")
-		}
-		if err := json.Unmarshal(bData, &metadata); err != nil {
-			return errors.Wrap(err, "read exporter metadata")
+		var buildpacks []string
+		for _, b := range group.Buildpacks {
+			buildpacks = append(buildpacks, b.ID)
 		}
 
-		// TODO: move to init
-		imgFactory, err := image.DefaultFactory()
-		if err != nil {
-			return errors.Wrap(err, "create default factory")
-		}
-
-		img, err := imgFactory.NewLocal(b.RunImage, false)
-		if err != nil {
-			return errors.Wrap(err, "new local")
-		}
-
-		runImageTopLayer, err := img.TopLayer()
-		if err != nil {
-			return errors.Wrap(err, "get run top layer")
-		}
-		runImageDigest, err := img.Digest()
-		if err != nil {
-			return errors.Wrap(err, "get run digest")
-		}
-		metadata.RunImage = lifecycle.RunImageMetadata{
-			TopLayer: runImageTopLayer,
-			SHA:      runImageDigest,
-		}
-
-		img.Rename(b.RepoName)
-
-		var prevMetadata lifecycle.AppImageMetadata
-		if prevInspect, _, err := b.Cli.ImageInspectWithRaw(context.Background(), b.RepoName); err != nil {
-			// TODO handle rel error (eg. not prev image not exist)
-		} else {
-			label := prevInspect.Config.Labels[lifecycle.MetadataLabel]
-			if err := json.Unmarshal([]byte(label), &prevMetadata); err != nil {
-				return errors.Wrap(err, "parsing previous image metadata label")
-			}
-		}
-
-		// TODO do alpha sort
-		for index, bp := range metadata.Buildpacks {
-			var prevBP *lifecycle.BuildpackMetadata
-			for _, pbp := range prevMetadata.Buildpacks {
-				if pbp.ID == bp.ID {
-					prevBP = &pbp
-				}
-			}
-
-			layerKeys := make([]string, 0, len(bp.Layers))
-			for n, _ := range bp.Layers {
-				layerKeys = append(layerKeys, n)
-			}
-			sort.Strings(layerKeys)
-
-			for _, layerName := range layerKeys {
-				layer := bp.Layers[layerName]
-				if layer.SHA == "" {
-					if prevBP == nil {
-						return fmt.Errorf("tried to use not exist previous buildpack: %s", bp.ID)
-					}
-					// TODO error nicely on not found
-					layer.SHA = prevBP.Layers[layerName].SHA
-					b.Log.Printf("reusing layer '%s/%s' with diffID '%s'\n", bp.ID, layerName, layer.SHA)
-					if err := img.ReuseLayer(layer.SHA); err != nil {
-						return errors.Wrapf(err, "reuse layer '%s/%s' from previous image", bp.ID, layerName)
-					}
-					metadata.Buildpacks[index].Layers[layerName] = layer
-				} else {
-					b.Log.Printf("adding layer '%s/%s' with diffID '%s'\n", bp.ID, layerName, layer.SHA)
-					if err := img.AddLayer(filepath.Join(tmpDir, "pack-exporter", strings.TrimPrefix(layer.SHA, "sha256:")+".tar")); err != nil {
-						return errors.Wrapf(err, "add layer '%s/%s'", bp.ID, layerName)
-					}
-				}
-			}
-		}
-
-		b.Log.Printf("adding app layer with diffID '%s'\n", metadata.App.SHA)
-		if err := img.AddLayer(filepath.Join(tmpDir, "pack-exporter", strings.TrimPrefix(metadata.App.SHA, "sha256:")+".tar")); err != nil {
-			return errors.Wrap(err, "add app layer")
-		}
-
-		b.Log.Printf("adding config layer with diffID '%s'\n", metadata.Config.SHA)
-		if err := img.AddLayer(filepath.Join(tmpDir, "pack-exporter", strings.TrimPrefix(metadata.Config.SHA, "sha256:")+".tar")); err != nil {
-			return errors.Wrap(err, "add config layer")
-		}
-
-		bData, err = json.Marshal(metadata)
-		if err != nil {
-			return errors.Wrap(err, "write exporter metadata")
-		}
-		if err := img.SetLabel(lifecycle.MetadataLabel, string(bData)); err != nil {
-			return errors.Wrap(err, "set image metadata label")
-		}
-		if imgSHA, err = img.Save(); err != nil {
-			return errors.Wrap(err, "save image")
+		if err := exportDaemon(b.Cli, buildpacks, b.WorkspaceVolume, b.RepoName, b.RunImage, b.Stdout, uid, gid); err != nil {
+			return err
 		}
 	}
 
-	b.Log.Printf("\n*** Image: %s@%s\n", b.RepoName, imgSHA)
 	return nil
 }
 

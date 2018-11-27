@@ -2,9 +2,11 @@ package pack
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"io"
 	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -15,12 +17,14 @@ import (
 )
 
 type RunFlags struct {
-	BuildFlags BuildFlags
-	Port       string
+	AppDir   string
+	Builder  string
+	RunImage string
+	Ports    []string
 }
 
 type RunConfig struct {
-	Port  string
+	Ports []string
 	Build Task
 	// All below are from BuildConfig
 	RepoName string
@@ -31,13 +35,20 @@ type RunConfig struct {
 }
 
 func (bf *BuildFactory) RunConfigFromFlags(f *RunFlags) (*RunConfig, error) {
-	bc, err := bf.BuildConfigFromFlags(&f.BuildFlags)
+	bc, err := bf.BuildConfigFromFlags(&BuildFlags{
+		AppDir:   f.AppDir,
+		Builder:  f.Builder,
+		RunImage: f.RunImage,
+		RepoName: f.repoName(),
+		Publish:  false,
+		NoPull:   false,
+	})
 	if err != nil {
 		return nil, err
 	}
 	rc := &RunConfig{
 		Build: bc,
-		Port:  f.Port,
+		Ports: f.Ports,
 		// All below are from BuildConfig
 		RepoName: bc.RepoName,
 		Cli:      bc.Cli,
@@ -49,18 +60,16 @@ func (bf *BuildFactory) RunConfigFromFlags(f *RunFlags) (*RunConfig, error) {
 	return rc, nil
 }
 
-func Run(appDir, buildImage, runImage, port string, makeStopCh func() <-chan struct{}) error {
+func Run(appDir, buildImage, runImage string, ports []string, makeStopCh func() <-chan struct{}) error {
 	bf, err := DefaultBuildFactory()
 	if err != nil {
 		return err
 	}
 	r, err := bf.RunConfigFromFlags(&RunFlags{
-		BuildFlags: BuildFlags{
-			AppDir:   appDir,
-			Builder:  buildImage,
-			RunImage: runImage,
-		},
-		Port: port,
+		AppDir:   appDir,
+		Builder:  buildImage,
+		RunImage: runImage,
+		Ports:    ports,
 	})
 	if err != nil {
 		return err
@@ -77,13 +86,13 @@ func (r *RunConfig) Run(makeStopCh func() <-chan struct{}) error {
 	}
 
 	fmt.Println("*** RUNNING:")
-	if r.Port == "" {
-		r.Port, err = r.exposedPorts(ctx, r.RepoName)
+	if r.Ports == nil {
+		r.Ports, err = r.exposedPorts(ctx, r.RepoName)
 		if err != nil {
 			return err
 		}
 	}
-	exposedPorts, portBindings, err := parsePorts(r.Port)
+	exposedPorts, portBindings, err := parsePorts(r.Ports)
 	if err != nil {
 		return err
 	}
@@ -114,20 +123,27 @@ func (r *RunConfig) Run(makeStopCh func() <-chan struct{}) error {
 	return nil
 }
 
-func (r *RunConfig) exposedPorts(ctx context.Context, imageID string) (string, error) {
+func (r *RunFlags) repoName() string {
+	dir, _ := filepath.Abs(r.AppDir)
+	// we can ignore errors here because they will be caught later by the Build command
+	h := md5.New()
+	io.WriteString(h, dir)
+	return fmt.Sprintf("pack.local/run/%x", h.Sum(nil))
+}
+
+func (r *RunConfig) exposedPorts(ctx context.Context, imageID string) ([]string, error) {
 	i, _, err := r.Cli.ImageInspectWithRaw(ctx, imageID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	ports := []string{}
+	var ports []string
 	for port := range i.Config.ExposedPorts {
 		ports = append(ports, port.Port())
 	}
-	return strings.Join(ports, ","), nil
+	return ports, nil
 }
 
-func parsePorts(port string) (nat.PortSet, nat.PortMap, error) {
-	ports := strings.Split(port, ",")
+func parsePorts(ports []string) (nat.PortSet, nat.PortMap, error) {
 	for i, p := range ports {
 		p = strings.TrimSpace(p)
 		if _, err := strconv.Atoi(p); err == nil {

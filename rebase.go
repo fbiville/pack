@@ -3,16 +3,21 @@ package pack
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/buildpack/lifecycle"
+	"github.com/buildpack/pack/image"
 	"log"
 
-	"github.com/buildpack/lifecycle"
 	"github.com/buildpack/pack/config"
-	"github.com/buildpack/pack/image"
+	"github.com/google/go-containerregistry/pkg/v1"
 )
 
 type RebaseConfig struct {
 	Image        image.Image
 	NewBaseImage image.Image
+}
+
+type WritableStore interface {
+	Write(image v1.Image) error
 }
 
 type RebaseFactory struct {
@@ -25,6 +30,11 @@ type RebaseFlags struct {
 	RepoName string
 	Publish  bool
 	NoPull   bool
+}
+
+type ImageFactory interface {
+	NewLocal(string, bool) (image.Image, error)
+	NewRemote(string) (image.Image, error)
 }
 
 func (f *RebaseFactory) RebaseConfigFromFlags(flags RebaseFlags) (RebaseConfig, error) {

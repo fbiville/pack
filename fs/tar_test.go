@@ -2,17 +2,18 @@ package fs_test
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"io/ioutil"
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
-	"github.com/buildpack/pack/fs"
 	"github.com/sclevine/spec"
 	"github.com/sclevine/spec/report"
+
+	"github.com/buildpack/pack/fs"
 )
 
 func TestFS(t *testing.T) {
@@ -43,16 +44,16 @@ func testFS(t *testing.T, when spec.G, it spec.S) {
 
 	it("writes a tar to the dest dir", func() {
 		tarFile := filepath.Join(tmpDir, "some.tar")
-		err := fs.CreateTarFile(tarFile, src, "/dir-in-archive", 1234, 2345)
+		err := fs.CreateTGZFile(tarFile, src, "/dir-in-archive", 1234, 2345)
 		if err != nil {
-			t.Fatalf("CreateTarFile failed: %s", err)
+			t.Fatalf("CreateTGZFile failed: %s", err)
 		}
 		file, err := os.Open(tarFile)
 		if err != nil {
 			t.Fatalf("could not open tar file %s: %s", tarFile, err)
 		}
-		defer file.Close()
-		tr := tar.NewReader(file)
+		gzr, err := gzip.NewReader(file)
+		tr := tar.NewReader(gzr)
 
 		t.Log("handles regular files")
 		header, err := tr.Next()
@@ -74,25 +75,23 @@ func testFS(t *testing.T, when spec.G, it spec.S) {
 			t.Fatalf(`expected some-file.txt to be group 2345 was %d`, header.Gid)
 		}
 
-		if runtime.GOOS != "windows" {
-			t.Log("handles symlinks")
-			header, err = tr.Next()
-			if err != nil {
-				t.Fatalf("Failed to get next file: %s", err)
-			}
-			if header.Name != "/dir-in-archive/sub-dir/link-file" {
-				t.Fatalf(`expected file with name /dir-in-archive/sub-dir/link-file, got %s`, header.Name)
-			}
-			if header.Uid != 1234 {
-				t.Fatalf(`expected link-file to be owned by 1234 was %d`, header.Uid)
-			}
-			if header.Gid != 2345 {
-				t.Fatalf(`expected link-file to be group 2345 was %d`, header.Gid)
-			}
+		t.Log("handles symlinks")
+		header, err = tr.Next()
+		if err != nil {
+			t.Fatalf("Failed to get next file: %s", err)
+		}
+		if header.Name != "/dir-in-archive/sub-dir/link-file" {
+			t.Fatalf(`expected file with name /dir-in-archive/sub-dir/link-file, got %s`, header.Name)
+		}
+		if header.Uid != 1234 {
+			t.Fatalf(`expected link-file to be owned by 1234 was %d`, header.Uid)
+		}
+		if header.Gid != 2345 {
+			t.Fatalf(`expected link-file to be group 2345 was %d`, header.Gid)
+		}
 
-			if header.Linkname != "../some-file.txt" {
-				t.Fatalf(`expected to link-file to have atrget "../some-file.txt" got "%s"`, header.Linkname)
-			}
+		if header.Linkname != "../some-file.txt" {
+			t.Fatalf(`expected to link-file to have atrget "../some-file.txt" got %s`, header.Linkname)
 		}
 	})
 }
