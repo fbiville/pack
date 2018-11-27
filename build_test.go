@@ -479,19 +479,12 @@ PATH
 				`, subject.RepoName)
 			})
 
-			when("publish", func() {
+			when.Focus("publish", func() {
 				it.Before(func() {
 					subject.RepoName = "localhost:" + registryPort + "/" + subject.RepoName
 					subject.Publish = true
 
 					h.CreateImageOnRemote(t, dockerCli, subject.RepoName, dockerFile)
-				})
-
-				it("tells the user nothing", func() {
-					h.AssertNil(t, subject.Analyze())
-
-					txt := string(bytes.Trim(buf.Bytes(), "\x00"))
-					h.AssertEq(t, txt, "")
 				})
 
 				it("places files in workspace", func() {

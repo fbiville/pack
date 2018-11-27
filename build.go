@@ -7,6 +7,8 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
 	"io"
 	"io/ioutil"
 	"log"
@@ -402,30 +404,43 @@ func (b *BuildConfig) groupToml(ctrID string) (*lifecycle.BuildpackGroup, error)
 }
 
 func (b *BuildConfig) Analyze() error {
-	metadata, err := b.imageLabel(b.RepoName, lifecycle.MetadataLabel, !b.Publish)
+	//metadata, err := b.imageLabel(b.RepoName, lifecycle.MetadataLabel, !b.Publish)
+	//if err != nil {
+	//	return errors.Wrap(err, "analyze image label")
+	//}
+	//if metadata == "" {
+	//	if b.Publish {
+	//		b.Log.Printf("WARNING: skipping analyze, image not found or requires authentication to access")
+	//	} else {
+	//		b.Log.Printf("WARNING: skipping analyze, image not found")
+	//	}
+	//	return nil
+	//}
+
+	r, err := name.ParseReference(b.RepoName, name.WeakValidation)
 	if err != nil {
-		return errors.Wrap(err, "analyze image label")
+		return err
 	}
-	if metadata == "" {
-		if b.Publish {
-			b.Log.Printf("WARNING: skipping analyze, image not found or requires authentication to access")
-		} else {
-			b.Log.Printf("WARNING: skipping analyze, image not found")
-		}
-		return nil
+	auth, err := authn.DefaultKeychain.Resolve(r.Context().Registry)
+	if err != nil {
+		return err
 	}
+	authHeader, err := auth.Authorization()
+	fmt.Println("AUTH HEADER", authHeader)
 
 	ctx := context.Background()
 	ctr, err := b.Cli.ContainerCreate(ctx, &container.Config{
 		Image: b.Builder,
+		Env: []string{fmt.Sprintf(`PACK_REGISTRY_AUTH="%s"`, authHeader)},
 		Cmd: []string{
 			"/lifecycle/analyzer",
 			"-launch", launchDir,
 			"-group", groupPath,
-			"-metadata", launchDir + "/imagemetadata.json",
+			//"-metadata", launchDir + "/imagemetadata.json",
 			b.RepoName,
 		},
 	}, &container.HostConfig{
+		NetworkMode: "host",
 		Binds: []string{
 			fmt.Sprintf("%s:%s:", b.WorkspaceVolume, launchDir),
 		},
@@ -435,13 +450,13 @@ func (b *BuildConfig) Analyze() error {
 	}
 	defer b.Cli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
 
-	tr, err := b.FS.CreateSingleFileTar(launchDir+"/imagemetadata.json", metadata)
-	if err != nil {
-		return errors.Wrap(err, "create tar with image metadata")
-	}
-	if err := b.Cli.CopyToContainer(ctx, ctr.ID, "/", tr, dockertypes.CopyToContainerOptions{}); err != nil {
-		return errors.Wrap(err, "copy image metadata to workspace volume")
-	}
+	//tr, err := b.FS.CreateSingleFileTar(launchDir+"/imagemetadata.json", metadata)
+	//if err != nil {
+	//	return errors.Wrap(err, "create tar with image metadata")
+	//}
+	//if err := b.Cli.CopyToContainer(ctx, ctr.ID, "/", tr, dockertypes.CopyToContainerOptions{}); err != nil {
+	//	return errors.Wrap(err, "copy image metadata to workspace volume")
+	//}
 
 	if err := b.Cli.RunContainer(ctx, ctr.ID, b.Stdout, b.Stderr); err != nil {
 		return errors.Wrap(err, "analyze run container")
