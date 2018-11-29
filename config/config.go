@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"github.com/buildpack/pack/style"
 	"os"
@@ -178,9 +177,6 @@ func (c *Config) SetDefaultBuilder(builder string) error {
 }
 
 func ImageByRegistry(registry string, images []string) (string, error) {
-	if len(images) == 0 {
-		return "", errors.New("empty images")
-	}
 	for _, i := range images {
 		reg, err := Registry(i)
 		if err != nil {

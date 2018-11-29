@@ -132,7 +132,7 @@ func rebaseCommand() *cobra.Command {
 				return err
 			}
 			factory := pack.RebaseFactory{
-				Log:          log.New(os.Stdout, "", log.LstdFlags),
+				Logger:       logger,
 				Config:       cfg,
 				ImageFactory: imageFactory,
 			}
