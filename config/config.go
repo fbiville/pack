@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/buildpack/pack/style"
 	"os"
 	"path/filepath"
 
@@ -52,6 +53,7 @@ func New(path string) (*Config, error) {
 	})
 
 	config.configPath = configPath
+
 	if err := config.save(); err != nil {
 		return nil, err
 	}
@@ -60,8 +62,6 @@ func New(path string) (*Config, error) {
 }
 
 func (c *Config) save() error {
-	// TODO: Eventually remove this, once most users are likely migrated
-	c.migrateBuildImagesToSingularBuildImage()
 
 	if err := os.MkdirAll(filepath.Dir(c.configPath), 0777); err != nil {
 		return err
@@ -93,6 +93,10 @@ func previousConfig(path string) (*Config, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+
+	// TODO: Eventually remove this, once most users are likely migrated
+	config.migrateBuildImagesToSingularBuildImage()
+
 	return config, nil
 }
 
@@ -114,12 +118,12 @@ func (c *Config) Get(stackID string) (*Stack, error) {
 			return &stack, nil
 		}
 	}
-	return nil, fmt.Errorf(`Missing stack: stack with id "%s" not found in pack config.toml`, stackID)
+	return nil, missingStackError(stackID)
 }
 
 func (c *Config) Add(stack Stack) error {
 	if _, err := c.Get(stack.ID); err == nil {
-		return fmt.Errorf(`stack "%s" already exists`, stack.ID)
+		return fmt.Errorf("stack %s already exists", style.Identifier(stack.ID))
 	}
 	c.Stacks = append(c.Stacks, stack)
 	return c.save()
@@ -137,7 +141,7 @@ func (c *Config) Update(stackID string, newStack Stack) error {
 			return c.save()
 		}
 	}
-	return fmt.Errorf(`Missing stack: stack with id "%s" not found in pack config.toml`, stackID)
+	return missingStackError(stackID)
 }
 
 func (c *Config) Delete(stackID string) error {
@@ -150,7 +154,7 @@ func (c *Config) Delete(stackID string) error {
 			return c.save()
 		}
 	}
-	return fmt.Errorf(`"%s" does not exist. Please pass in a valid stack ID.`, stackID)
+	return missingStackError(stackID)
 }
 func (c *Config) SetDefaultStack(stackID string) error {
 	for _, s := range c.Stacks {
@@ -159,7 +163,7 @@ func (c *Config) SetDefaultStack(stackID string) error {
 			return c.save()
 		}
 	}
-	return fmt.Errorf(`"%s" does not exist. Please pass in a valid stack ID.`, stackID)
+	return missingStackError(stackID)
 }
 
 // Path returns the directory path where the config is stored as a toml file.
@@ -195,4 +199,8 @@ func Registry(imageName string) (string, error) {
 		return "", err
 	}
 	return ref.Context().RegistryStr(), nil
+}
+
+func missingStackError(stackID string) error {
+	return fmt.Errorf(`stack %s does not exist`, style.Identifier(stackID))
 }

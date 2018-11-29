@@ -61,7 +61,7 @@ func buildCommand() *cobra.Command {
 		Use:   "build <image-name>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Generate app image from source code",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			buildFlags.RepoName = args[0]
 			bf, err := pack.DefaultBuildFactory()
 			if err != nil {
@@ -86,7 +86,7 @@ func runCommand() *cobra.Command {
 		Use:   "run",
 		Args:  cobra.NoArgs,
 		Short: "Build and run app image (recommended for development only)",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			bf, err := pack.DefaultBuildFactory()
 			if err != nil {
 				return err
@@ -120,7 +120,7 @@ func rebaseCommand() *cobra.Command {
 		Use:   "rebase <image-name>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Rebase app image with latest run image",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			flags.RepoName = args[0]
 
 			imageFactory, err := image.DefaultFactory()
@@ -155,7 +155,7 @@ func createBuilderCommand() *cobra.Command {
 		Use:   "create-builder <image-name> --builder-config <builder-toml-path>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Create builder image",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			flags.RepoName = args[0]
 
 			if runtime.GOOS == "windows" {
@@ -201,7 +201,7 @@ func addStackCommand() *cobra.Command {
 		Use:   "add-stack <stack-id> --build-image <build-image-name> --run-image <run-image-name>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Add stack to list of available stacks",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.NewDefault()
 			if err != nil {
 				return err
@@ -230,7 +230,7 @@ func setDefaultStackCommand() *cobra.Command {
 		Use:   "set-default-stack <stack-id>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Set default stack used by other commands",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.New(filepath.Join(os.Getenv("HOME"), ".pack"))
 			if err != nil {
 				return err
@@ -239,7 +239,7 @@ func setDefaultStackCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			logger.Info("Stack %s is now the default stack\n", style.Identifier(args[0]))
+			logger.Info("Stack %s is now the default stack", style.Identifier(args[0]))
 			return nil
 		}),
 	}
@@ -252,7 +252,7 @@ func setDefaultBuilderCommand() *cobra.Command {
 		Use:   "set-default-builder <builder-name>",
 		Short: "Set default builder used by other commands",
 		Args:  cobra.ExactArgs(1),
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.NewDefault()
 			if err != nil {
 				return err
@@ -261,7 +261,7 @@ func setDefaultBuilderCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			logger.Info("Stack %s is now the default builder\n", style.Identifier(args[0]))
+			logger.Info("Builder %s is now the default builder", style.Identifier(args[0]))
 			return nil
 		}),
 	}
@@ -278,7 +278,7 @@ func updateStackCommand() *cobra.Command {
 		Use:   "update-stack <stack-id> --build-image <build-image-name> --run-image <run-image-name>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Update stack build and run images",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.NewDefault()
 			if err != nil {
 				return err
@@ -306,7 +306,7 @@ func deleteStackCommand() *cobra.Command {
 		Use:   "delete-stack <stack-id>",
 		Args:  cobra.ExactArgs(1),
 		Short: "Delete stack from list of available stacks",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			cfg, err := config.NewDefault()
 			if err != nil {
@@ -328,7 +328,7 @@ func versionCommand() *cobra.Command {
 		Use:   "version",
 		Args:  cobra.NoArgs,
 		Short: "Show current `pack` version",
-		RunE: interceptError(func(cmd *cobra.Command, args []string) error {
+		RunE: logError(func(cmd *cobra.Command, args []string) error {
 			logger.Info(strings.TrimSpace(Version))
 			return nil
 		}),
@@ -355,7 +355,7 @@ func addHelpFlag(cmd *cobra.Command, commandName string) {
 	cmd.Flags().BoolP("help", "h", false, "Help for "+commandName)
 }
 
-func interceptError(f func(cmd *cobra.Command, args []string) error) func(*cobra.Command, []string) error {
+func logError(f func(cmd *cobra.Command, args []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceErrors = true
 		cmd.SilenceUsage = true
