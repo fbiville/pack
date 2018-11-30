@@ -404,63 +404,66 @@ func (b *BuildConfig) groupToml(ctrID string) (*lifecycle.BuildpackGroup, error)
 }
 
 func (b *BuildConfig) Analyze() error {
-	//metadata, err := b.imageLabel(b.RepoName, lifecycle.MetadataLabel, !b.Publish)
-	//if err != nil {
-	//	return errors.Wrap(err, "analyze image label")
-	//}
-	//if metadata == "" {
-	//	if b.Publish {
-	//		b.Log.Printf("WARNING: skipping analyze, image not found or requires authentication to access")
-	//	} else {
-	//		b.Log.Printf("WARNING: skipping analyze, image not found")
-	//	}
-	//	return nil
-	//}
-
-	r, err := name.ParseReference(b.RepoName, name.WeakValidation)
-	if err != nil {
-		return err
-	}
-	auth, err := authn.DefaultKeychain.Resolve(r.Context().Registry)
-	if err != nil {
-		return err
-	}
-	authHeader, err := auth.Authorization()
-	fmt.Println("AUTH HEADER", authHeader)
-
 	ctx := context.Background()
-	ctr, err := b.Cli.ContainerCreate(ctx, &container.Config{
+	ctrConf := &container.Config{
 		Image: b.Builder,
-		Env: []string{fmt.Sprintf(`PACK_REGISTRY_AUTH="%s"`, authHeader)},
-		Cmd: []string{
-			"/lifecycle/analyzer",
-			"-launch", launchDir,
-			"-group", groupPath,
-			//"-metadata", launchDir + "/imagemetadata.json",
-			b.RepoName,
-		},
-	}, &container.HostConfig{
-		NetworkMode: "host",
+	}
+	hostConfig := &container.HostConfig{
 		Binds: []string{
 			fmt.Sprintf("%s:%s:", b.WorkspaceVolume, launchDir),
 		},
-	}, nil, "")
+	}
+
+	if b.Publish {
+		r, err := name.ParseReference(b.RepoName, name.WeakValidation)
+		if err != nil {
+			return err
+		}
+		auth, err := authn.DefaultKeychain.Resolve(r.Context().Registry)
+		if err != nil {
+			return err
+		}
+		authHeader, err := auth.Authorization()
+		ctrConf.Env = []string{fmt.Sprintf(`PACK_REGISTRY_AUTH="%s"`, authHeader)}
+		ctrConf.Cmd = []string{
+			"/lifecycle/analyzer",
+			"-launch", launchDir,
+			"-group", groupPath,
+			b.RepoName,
+		}
+		hostConfig.NetworkMode = "host"
+	} else {
+		ctrConf.Cmd = []string{
+			"/lifecycle/analyzer",
+			"-launch", launchDir,
+			"-group", groupPath,
+			"-daemon",
+			b.RepoName,
+		}
+		ctrConf.User = "root"
+		hostConfig.Binds = append(hostConfig.Binds, "/var/run/docker.sock:/var/run/docker.sock")
+	}
+
+	ctr, err := b.Cli.ContainerCreate(ctx, ctrConf, hostConfig, nil, "")
 	if err != nil {
 		return errors.Wrap(err, "analyze container create")
 	}
 	defer b.Cli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
 
-	//tr, err := b.FS.CreateSingleFileTar(launchDir+"/imagemetadata.json", metadata)
-	//if err != nil {
-	//	return errors.Wrap(err, "create tar with image metadata")
-	//}
-	//if err := b.Cli.CopyToContainer(ctx, ctr.ID, "/", tr, dockertypes.CopyToContainerOptions{}); err != nil {
-	//	return errors.Wrap(err, "copy image metadata to workspace volume")
-	//}
-
 	if err := b.Cli.RunContainer(ctx, ctr.ID, b.Stdout, b.Stderr); err != nil {
 		return errors.Wrap(err, "analyze run container")
 	}
+
+	if ctrConf.User == "root" {
+		uid, gid, err := b.packUidGid(b.Builder)
+		if err != nil {
+			return errors.Wrap(err, "getting pack uid/gid")
+		}
+		if err := b.chownDir(launchDir, uid, gid); err != nil {
+			return errors.Wrap(err, "chown launch dir")
+		}
+	}
+
 	return nil
 }
 

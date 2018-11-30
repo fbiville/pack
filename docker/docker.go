@@ -2,12 +2,10 @@ package docker
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/ioutil"
 
 	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
 	dockercli "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/pkg/errors"
@@ -26,8 +24,6 @@ func New() (*Client, error) {
 }
 
 func (d *Client) RunContainer(ctx context.Context, id string, stdout io.Writer, stderr io.Writer) error {
-	bodyChan, errChan := d.ContainerWait(ctx, id, container.WaitConditionNextExit)
-
 	if err := d.ContainerStart(ctx, id, dockertypes.ContainerStartOptions{}); err != nil {
 		return errors.Wrap(err, "container start")
 	}
@@ -39,23 +35,10 @@ func (d *Client) RunContainer(ctx context.Context, id string, stdout io.Writer, 
 	if err != nil {
 		return errors.Wrap(err, "container logs stdout")
 	}
+	defer logs.Close()
 
-	copyErr := make(chan error)
-	go func() {
-		_, err := stdcopy.StdCopy(stdout, stderr, logs)
-		copyErr <- err
-	}()
-
-	select {
-	case body := <-bodyChan:
-		if body.StatusCode != 0 {
-			return fmt.Errorf("failed with status code: %d", body.StatusCode)
-		}
-	case err := <-errChan:
-		fmt.Printf("ERR: %#v\n", err)
-		return err
-	}
-	return <-copyErr
+	_, err = stdcopy.StdCopy(stdout, stderr, logs)
+	return err
 }
 
 func (d *Client) PullImage(ref string) error {

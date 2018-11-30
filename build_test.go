@@ -456,7 +456,7 @@ PATH
 				it("informs the user", func() {
 					err := subject.Analyze()
 					h.AssertNil(t, err)
-					h.AssertContains(t, buf.String(), "WARNING: skipping analyze, image not found or requires authentication to access")
+					h.AssertContains(t, buf.String(), "WARNING: skipping analyze")
 				})
 			})
 			when("daemon", func() {
@@ -464,7 +464,7 @@ PATH
 				it("informs the user", func() {
 					err := subject.Analyze()
 					h.AssertNil(t, err)
-					h.AssertContains(t, buf.String(), "WARNING: skipping analyze, image not found\n")
+					h.AssertContains(t, buf.String(), "WARNING: skipping analyze")
 				})
 			})
 		})
@@ -473,13 +473,13 @@ PATH
 			var dockerFile string
 			it.Before(func() {
 				dockerFile = fmt.Sprintf(`
-					FROM scratch
+					FROM busybox
 					LABEL io.buildpacks.lifecycle.metadata='{"buildpacks":[{"key":"io.buildpacks.samples.nodejs","layers":{"node_modules":{"sha":"sha256:99311ec03d790adf46d35cd9219ed80a7d9a4b97f761247c02c77e7158a041d5","data":{"lock_checksum":"eb04ed1b461f1812f0f4233ef997cdb5"}}}}]}'
 					LABEL repo_name_for_randomisation=%s
 				`, subject.RepoName)
 			})
 
-			when.Focus("publish", func() {
+			when("publish", func() {
 				it.Before(func() {
 					subject.RepoName = "localhost:" + registryPort + "/" + subject.RepoName
 					subject.Publish = true
@@ -487,12 +487,15 @@ PATH
 					h.CreateImageOnRemote(t, dockerCli, subject.RepoName, dockerFile)
 				})
 
-				it("places files in workspace", func() {
+				it("places files in workspace and sets owner to pack", func() {
 					h.AssertNil(t, subject.Analyze())
 
 					txt := h.ReadFromDocker(t, subject.WorkspaceVolume, "/workspace/io.buildpacks.samples.nodejs/node_modules.toml")
 
 					h.AssertEq(t, txt, "lock_checksum = \"eb04ed1b461f1812f0f4233ef997cdb5\"\n")
+					hdr := h.StatFromDocker(t, subject.WorkspaceVolume, "/workspace/io.buildpacks.samples.nodejs/node_modules.toml")
+					h.AssertEq(t, hdr.Uid, 1000)
+					h.AssertEq(t, hdr.Gid, 1000)
 				})
 			})
 
@@ -507,18 +510,15 @@ PATH
 					h.AssertNil(t, h.DockerRmi(dockerCli, subject.RepoName))
 				})
 
-				it("tells the user nothing", func() {
-					h.AssertNil(t, subject.Analyze())
-
-					txt := string(bytes.Trim(buf.Bytes(), "\x00"))
-					h.AssertEq(t, txt, "")
-				})
-
-				it("places files in workspace", func() {
-					h.AssertNil(t, subject.Analyze())
+				it("places files in workspace and sets owner to pack", func() {
+					err := subject.Analyze()
+					h.AssertNil(t, err)
 
 					txt := h.ReadFromDocker(t, subject.WorkspaceVolume, "/workspace/io.buildpacks.samples.nodejs/node_modules.toml")
 					h.AssertEq(t, txt, "lock_checksum = \"eb04ed1b461f1812f0f4233ef997cdb5\"\n")
+					hdr := h.StatFromDocker(t, subject.WorkspaceVolume, "/workspace/io.buildpacks.samples.nodejs/node_modules.toml")
+					h.AssertEq(t, hdr.Uid, 1000)
+					h.AssertEq(t, hdr.Gid, 1000)
 				})
 			})
 		})
