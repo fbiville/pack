@@ -51,8 +51,7 @@ func testConfig(t *testing.T, when spec.G, it spec.S) {
 
 				h.AssertEq(t, len(subject.Stacks), 1)
 				h.AssertEq(t, subject.Stacks[0].ID, "io.buildpacks.stacks.bionic")
-				h.AssertEq(t, len(subject.Stacks[0].BuildImages), 1)
-				h.AssertEq(t, subject.Stacks[0].BuildImages[0], "packs/build")
+				h.AssertEq(t, subject.Stacks[0].BuildImage, "packs/build")
 				h.AssertEq(t, len(subject.Stacks[0].RunImages), 1)
 				h.AssertEq(t, subject.Stacks[0].RunImages[0], "packs/run")
 				h.AssertEq(t, subject.DefaultStackID, "io.buildpacks.stacks.bionic")
@@ -112,14 +111,12 @@ default-builder = "some/builder"
 
 				h.AssertEq(t, len(subject.Stacks), 2)
 				h.AssertEq(t, subject.Stacks[0].ID, "some.user.provided.stack")
-				h.AssertEq(t, len(subject.Stacks[0].BuildImages), 1)
-				h.AssertEq(t, subject.Stacks[0].BuildImages[0], "some/build")
+				h.AssertEq(t, subject.Stacks[0].BuildImage, "some/build")
 				h.AssertEq(t, len(subject.Stacks[0].RunImages), 1)
 				h.AssertEq(t, subject.Stacks[0].RunImages[0], "some/run")
 
 				h.AssertEq(t, subject.Stacks[1].ID, "io.buildpacks.stacks.bionic")
-				h.AssertEq(t, len(subject.Stacks[1].BuildImages), 1)
-				h.AssertEq(t, subject.Stacks[1].BuildImages[0], "packs/build")
+				h.AssertEq(t, subject.Stacks[1].BuildImage, "packs/build")
 				h.AssertEq(t, len(subject.Stacks[1].RunImages), 1)
 				h.AssertEq(t, subject.Stacks[1].RunImages[0], "packs/run")
 			})
@@ -154,8 +151,7 @@ default-builder = "some/builder"
 
 				h.AssertEq(t, len(subject.Stacks), 1)
 				h.AssertEq(t, subject.Stacks[0].ID, "io.buildpacks.stacks.bionic")
-				h.AssertEq(t, len(subject.Stacks[0].BuildImages), 1)
-				h.AssertEq(t, subject.Stacks[0].BuildImages[0], "some-other/build")
+				h.AssertEq(t, subject.Stacks[0].BuildImage, "some-other/build")
 				h.AssertEq(t, len(subject.Stacks[0].RunImages), 2)
 				h.AssertEq(t, subject.Stacks[0].RunImages[0], "some-other/run")
 				h.AssertEq(t, subject.Stacks[0].RunImages[1], "packs/run")
@@ -202,7 +198,7 @@ default-stack-id = "my.stack"
 			it("returns an error", func() {
 				_, err := subject.Get("stack-4")
 				h.AssertNotNil(t, err)
-				h.AssertEq(t, err.Error(), `Missing stack: stack with id "stack-4" not found in pack config.toml`)
+				h.AssertEq(t, err.Error(), "stack stack-4 does not exist")
 			})
 		})
 	})
@@ -233,7 +229,7 @@ default-stack-id = "old.default.stack"
 		when("the stack doesn't exist", func() {
 			it("returns an error and leaves the original default", func() {
 				err := subject.SetDefaultStack("some.missing.stack")
-				h.AssertError(t, err, `"some.missing.stack" does not exist. Please pass in a valid stack ID.`)
+				h.AssertError(t, err, "stack some.missing.stack does not exist")
 				b, err := ioutil.ReadFile(filepath.Join(tmpDir, "config.toml"))
 				h.AssertNil(t, err)
 				h.AssertContains(t, string(b), `default-stack-id = "old.default.stack"`)
@@ -314,11 +310,11 @@ default-stack-id = "my.stack"
 					RunImages:  []string{"neworg/run"},
 				})
 				h.AssertNotNil(t, err)
-				h.AssertEq(t, err.Error(), `stack "my.stack" already exists`)
+				h.AssertEq(t, err.Error(), "stack my.stack already exists")
 
 				stack, err := subject.Get("my.stack")
 				h.AssertNil(t, err)
-				h.AssertEq(t, stack.BuildImages, []string(nil))
+				h.AssertEq(t, stack.BuildImage, "")
 
 				stat, err = os.Stat(filepath.Join(tmpDir, "config.toml"))
 				h.AssertNil(t, err)
@@ -392,7 +388,15 @@ default-stack-id = "stack-1"
 					RunImages:  []string{"packs/run-2"},
 				})
 				h.AssertNotNil(t, err)
-				h.AssertEq(t, err.Error(), `Missing stack: stack with id "other.stack" not found in pack config.toml`)
+				h.AssertEq(t, err.Error(), "stack other.stack does not exist")
+			})
+		})
+
+		when("neither build image nor run image specified", func() {
+			it("errors and leaves file unchanged", func() {
+				err := subject.Update("my.stack", config.Stack{})
+				h.AssertNotNil(t, err)
+				h.AssertEq(t, err.Error(), "no build image or run image(s) specified")
 			})
 		})
 	})
@@ -437,7 +441,7 @@ default-stack-id = "stack-1"
 			it("errors and leaves file unchanged", func() {
 				err := subject.Delete("other.stack")
 				h.AssertNotNil(t, err)
-				h.AssertEq(t, err.Error(), `"other.stack" does not exist. Please pass in a valid stack ID.`)
+				h.AssertEq(t, err.Error(), "stack other.stack does not exist")
 			})
 		})
 
@@ -497,13 +501,6 @@ default-stack-id = "stack-1"
 				name, err := config.ImageByRegistry("gcr.io", images)
 				h.AssertNil(t, err)
 				h.AssertEq(t, name, "gcr.io/myorg/myrepo")
-			})
-		})
-
-		when("images is an empty slice", func() {
-			it("errors", func() {
-				_, err := config.ImageByRegistry("gcr.io", []string{})
-				h.AssertNotNil(t, err)
 			})
 		})
 	})
