@@ -232,8 +232,7 @@ func testPack(t *testing.T, when spec.G, it spec.S) {
 		})
 		it.After(func() {
 			repoName := fmt.Sprintf("pack.local/run/%x", md5.Sum([]byte(sourceCodePath)))
-			killDockerByRepoName(t, repoName)
-			h.DockerRmi(dockerCli, repoName)
+			h.AssertNil(t, h.DockerRmi(dockerCli, repoName))
 
 			if sourceCodePath != "" {
 				os.RemoveAll(sourceCodePath)
