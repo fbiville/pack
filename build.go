@@ -424,7 +424,11 @@ func (b *BuildConfig) Analyze() error {
 			return err
 		}
 		authHeader, err := auth.Authorization()
-		ctrConf.Env = []string{fmt.Sprintf(`PACK_REGISTRY_AUTH="%s"`, authHeader)}
+		if err != nil {
+			return err
+		}
+
+		ctrConf.Env = []string{fmt.Sprintf(`PACK_REGISTRY_AUTH=%s`, authHeader)}
 		ctrConf.Cmd = []string{
 			"/lifecycle/analyzer",
 			"-launch", launchDir,
