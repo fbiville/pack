@@ -18,3 +18,5 @@ require (
 )
 
 replace github.com/google/go-containerregistry v0.0.0-20181023232207-eb57122f1bf9 => github.com/dgodd/go-containerregistry v0.0.0-20180912122137-611aad063148a69435dccd3cf8475262c11814f6
+
+replace github.com/buildpack/lifecycle v0.0.0-20181116214402-fa66d9071434 => ../lifecycle

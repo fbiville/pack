@@ -14,10 +14,10 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/buildpack/lifecycle"
+	"github.com/buildpack/lifecycle/image"
 	"github.com/pkg/errors"
 
 	"github.com/buildpack/pack/config"
-	"github.com/buildpack/pack/image"
 )
 
 type BuilderTOML struct {
@@ -104,7 +104,7 @@ func (f *BuilderFactory) resolveBuildpackURI(builderDir string, b struct {
 		return Buildpack{}, err
 	}
 	switch asurl.Scheme {
-	case "", // This is the only way to support relative filepaths
+	case "",    // This is the only way to support relative filepaths
 		"file": // URIs with file:// protocol force the use of absolute paths. Host=localhost may be implied with file:///
 
 		path := asurl.Path
