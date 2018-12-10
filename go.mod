@@ -7,7 +7,7 @@ require (
 	github.com/dgodd/dockerdial v1.0.1
 	github.com/docker/docker v0.7.3-0.20181027010111-b8e87cfdad8d
 	github.com/docker/go-connections v0.4.0
-	github.com/golang/mock v1.1.1
+	github.com/golang/mock v1.2.0
 	github.com/google/go-cmp v0.2.0
 	github.com/google/go-containerregistry v0.0.0-20181023232207-eb57122f1bf9
 	github.com/google/uuid v0.0.0-20171129191014-dec09d789f3d
